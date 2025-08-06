@@ -7,13 +7,11 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create auto-mirror-db",
-    "db:migrate": "wrangler d1 execute auto-mirror-db --file=src/schema.sql",
-    "db:migrate-local": "wrangler d1 execute auto-mirror-db --local --file=src/schema.sql",
-    "queue:create": "wrangler queues create mirror-writes",
     "setup-migration": "tsx src/migration-cli.ts",
-    "convert-schema": "tsx src/schema-helper.ts",
     "export-data": "echo 'Use the /export endpoint: curl http://localhost:8787/export?table=tablename > export.sql'",
-    "validate": "wrangler d1 list && echo 'Validation: Check that your D1 database ID matches wrangler.toml'"
+    "validate": "wrangler d1 list && echo 'Validation: Check that your D1 database ID matches wrangler.toml'",
+    "get-schema": "echo 'Get database schema: curl http://localhost:8787/schema'",
+    "get-migration": "echo 'Generate migration script: curl http://localhost:8787/migration-script > postgres-migration.sql'"
   },
   "keywords": [
     "cloudflare",

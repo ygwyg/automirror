@@ -1,4 +1,4 @@
-import { writeNote, readNotes } from './db-router';
+import { executeQuery, getTableInfo, getAllTables } from './db-router';
 import { AutoMirrorDB } from './auto-mirror';
 import { handleExport } from './export-worker';
 
@@ -18,51 +18,92 @@ export default {
 
             const url = new URL(req.url);
 
-            if (req.method === "POST" && url.pathname === "/notes") {
+            // Generic SQL execution endpoint
+            if (req.method === "POST" && url.pathname === "/execute") {
                 try {
-                    const body = await req.json() as { title: string; content: string };
-                    const { title, content } = body;
+                    const body = await req.json() as { sql: string; params?: unknown[] };
+                    const { sql, params = [] } = body;
 
                     // Basic input validation
-                    if (!title || typeof title !== 'string' || title.trim().length === 0) {
-                        return Response.json({ error: 'Title is required and must be a non-empty string' }, { status: 400 });
-                    }
-                    if (!content || typeof content !== 'string' || content.trim().length === 0) {
-                        return Response.json({ error: 'Content is required and must be a non-empty string' }, { status: 400 });
+                    if (!sql || typeof sql !== 'string' || sql.trim().length === 0) {
+                        return Response.json({ error: 'SQL query is required' }, { status: 400 });
                     }
 
-                    // Limit length to prevent abuse
-                    if (title.length > 500) {
-                        return Response.json({ error: 'Title must be 500 characters or less' }, { status: 400 });
-                    }
-                    if (content.length > 10000) {
-                        return Response.json({ error: 'Content must be 10,000 characters or less' }, { status: 400 });
+                    // Limit SQL length to prevent abuse
+                    if (sql.length > 10000) {
+                        return Response.json({ error: 'SQL query too long (max 10,000 characters)' }, { status: 400 });
                     }
 
-                    const opId = crypto.randomUUID();
-                    const result = await writeNote(env, title.trim(), content.trim(), opId);
+                    if (!Array.isArray(params)) {
+                        return Response.json({ error: 'Parameters must be an array' }, { status: 400 });
+                    }
+
+                    const result = await executeQuery(env, sql.trim(), params);
                     return Response.json(result);
                 } catch (error) {
-                    console.error('Error creating note:', error);
+                    console.error('Error executing query:', error);
                     if (error instanceof SyntaxError) {
                         return Response.json({ error: 'Invalid JSON in request body' }, { status: 400 });
                     }
-                    return Response.json({ error: 'Failed to create note' }, { status: 500 });
+                    return Response.json({ error: 'Failed to execute query' }, { status: 500 });
                 }
             }
 
-            if (req.method === "GET" && url.pathname === "/notes") {
+            // Get database schema information
+            if (req.method === "GET" && url.pathname === "/schema") {
                 try {
-                    const rows = await readNotes(env);
-                    return Response.json(rows);
+                    const tables = await getAllTables(env);
+                    const schema: Record<string, any[]> = {};
+
+                    for (const table of tables) {
+                        schema[table] = await getTableInfo(env, table);
+                    }
+
+                    return Response.json({ tables, schema });
                 } catch (error) {
-                    console.error('Error reading notes:', error);
-                    return Response.json({ error: 'Failed to read notes' }, { status: 500 });
+                    console.error('Error getting schema:', error);
+                    return Response.json({ error: 'Failed to get database schema' }, { status: 500 });
                 }
             }
 
+            // Get list of tables
+            if (req.method === "GET" && url.pathname === "/tables") {
+                try {
+                    const tables = await getAllTables(env);
+                    return Response.json({ tables });
+                } catch (error) {
+                    console.error('Error getting tables:', error);
+                    return Response.json({ error: 'Failed to get tables' }, { status: 500 });
+                }
+            }
+
+            // Export data endpoint
             if (req.method === "GET" && url.pathname === "/export") {
                 return handleExport(req, env);
+            }
+
+            // Generate migration script
+            if (req.method === "GET" && url.pathname === "/migration-script") {
+                try {
+                    const tables = await getAllTables(env);
+                    const schema: Record<string, any[]> = {};
+
+                    for (const table of tables) {
+                        schema[table] = await getTableInfo(env, table);
+                    }
+
+                    const migrationScript = await generatePostgresMigrationScript(schema);
+
+                    return new Response(migrationScript, {
+                        headers: {
+                            'Content-Type': 'text/plain',
+                            'Content-Disposition': 'attachment; filename="postgres-migration.sql"'
+                        }
+                    });
+                } catch (error) {
+                    console.error('Error generating migration script:', error);
+                    return Response.json({ error: 'Failed to generate migration script' }, { status: 500 });
+                }
             }
 
             return new Response("Not found", { status: 404 });
@@ -118,4 +159,9 @@ export default {
             }
         }
     }
-}; 
+};
+
+async function generatePostgresMigrationScript(schema: Record<string, any[]>): Promise<string> {
+    const { convertD1SchemaToPostgres } = await import('./schema-helper');
+    return convertD1SchemaToPostgres(schema);
+} 

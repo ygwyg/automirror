@@ -53,10 +53,24 @@ export class AutoMirrorDB {
     }
 
     private isWriteSQL(sql: string): boolean {
-        const trimmedSql = sql.trim().toLowerCase();
-        return trimmedSql.startsWith('insert') ||
-            trimmedSql.startsWith('update') ||
-            trimmedSql.startsWith('delete');
+        // Remove comments and normalize whitespace
+        const cleanSql = sql
+            .replace(/--.*$/gm, '') // Remove line comments
+            .replace(/\/\*[\s\S]*?\*\//g, '') // Remove block comments
+            .replace(/\s+/g, ' ') // Normalize whitespace
+            .trim()
+            .toLowerCase();
+
+        if (!cleanSql) return false;
+
+        // Split by semicolons to handle multi-statement SQL
+        const statements = cleanSql.split(';').map(s => s.trim()).filter(s => s.length > 0);
+
+        // Check if any statement is a write operation
+        return statements.some(statement => {
+            const firstWord = statement.split(/\s+/)[0];
+            return ['insert', 'update', 'delete', 'replace', 'create', 'drop', 'alter'].includes(firstWord);
+        });
     }
 
     private async mirrorToPostgres(sql: string, params: unknown[]) {
