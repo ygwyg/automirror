@@ -1,0 +1,35 @@
+name = "d1-auto-mirror-extended"
+compatibility_date = "2025-08-04"
+
+# D1 Database Configuration
+# Run: wrangler d1 create auto-mirror-db
+# Then replace "your-d1-database-id" with the actual ID from the output
+[[d1_databases]]
+binding = "DB"
+database_name = "auto-mirror-db"
+database_id = "your-d1-database-id"
+
+# Hyperdrive Configuration for Postgres
+# Create a Hyperdrive connection in Cloudflare Dashboard
+# Then replace "your-hyperdrive-binding-id" with the actual ID
+[[hyperdrive]]
+binding = "PG"
+id = "your-hyperdrive-binding-id"
+
+# Queue Configuration
+# Run: wrangler queues create mirror-writes
+[[queues.producers]]
+binding = "MIRROR_QUEUE"
+queue = "mirror-writes"
+
+[[queues.consumers]]
+queue = "mirror-writes"
+
+# Environment Variables
+[vars]
+# Set to "d1" for D1 primary, "pg" for Postgres primary
+PRIMARY_DB = "d1"
+
+# Optional: Direct Postgres connection for local development
+# Uncomment and set for local testing without Hyperdrive
+# PG_DSN = "postgresql://user:password@localhost:5432/dbname" 

@@ -1,0 +1,39 @@
+{
+  "name": "d1-auto-mirror-extended",
+  "version": "0.1.0-alpha",
+  "description": "Progressive database migration framework for moving from Cloudflare D1 to Postgres without downtime (Alpha Release)",
+  "main": "src/worker.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create auto-mirror-db",
+    "db:migrate": "wrangler d1 execute auto-mirror-db --file=src/schema.sql",
+    "db:migrate-local": "wrangler d1 execute auto-mirror-db --local --file=src/schema.sql",
+    "queue:create": "wrangler queues create mirror-writes",
+    "setup-migration": "tsx src/migration-cli.ts",
+    "convert-schema": "tsx src/schema-helper.ts",
+    "export-data": "echo 'Use the /export endpoint: curl http://localhost:8787/export?table=tablename > export.sql'",
+    "validate": "wrangler d1 list && echo 'Validation: Check that your D1 database ID matches wrangler.toml'"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "d1",
+    "postgres",
+    "database-migration",
+    "alpha"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.10.9",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.84.0",
+    "tsx": "^4.7.0"
+  }
+} 
