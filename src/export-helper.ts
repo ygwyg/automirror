@@ -1,17 +1,31 @@
 import { Env } from './worker';
+import { TableColumn, deriveOrderingColumns, formatPostgresValue, quoteIdentifier } from './sql-utils';
 
 interface ExportOptions {
     batchSize?: number;
     tableName: string;
-    orderBy?: string;
+    orderBy?: string | string[];
     whereClause?: string;
+    schema?: TableColumn[];
 }
 
 /**
  * Stream export D1 data in batches to avoid memory issues
  */
 export async function* streamTableData(env: Env, options: ExportOptions) {
-    const { tableName, batchSize = 1000, orderBy = 'id', whereClause } = options;
+    const { tableName, batchSize = 1000, orderBy, whereClause, schema } = options;
+
+    const orderingColumns = Array.isArray(orderBy)
+        ? orderBy
+        : orderBy
+            ? [orderBy]
+            : deriveOrderingColumns(schema);
+
+    const tableIdentifier = quoteIdentifier(tableName);
+    const resolvedOrdering = orderingColumns.length > 0 ? orderingColumns : ['rowid'];
+    const orderByClause = resolvedOrdering
+        .map(column => column.toLowerCase() === 'rowid' ? 'rowid' : quoteIdentifier(column))
+        .join(', ');
 
     let offset = 0;
     let hasMore = true;
@@ -19,10 +33,10 @@ export async function* streamTableData(env: Env, options: ExportOptions) {
     while (hasMore) {
         const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
         const sql = `
-      SELECT * FROM ${tableName} 
+      SELECT * FROM ${tableIdentifier}
       ${whereSQL}
-      ORDER BY ${orderBy} 
-      LIMIT ${batchSize} 
+      ORDER BY ${orderByClause}
+      LIMIT ${batchSize}
       OFFSET ${offset}
     `;
 
@@ -50,10 +64,10 @@ export async function* streamTableData(env: Env, options: ExportOptions) {
 /**
  * Get table schema information from D1
  */
-export async function getTableSchema(env: Env, tableName: string) {
-    const stmt = env.DB.prepare(`PRAGMA table_info(${tableName})`);
+export async function getTableSchema(env: Env, tableName: string): Promise<TableColumn[]> {
+    const stmt = env.DB.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`);
     const result = await stmt.all();
-    return result.results;
+    return result.results as unknown as TableColumn[];
 }
 
 /**
@@ -75,22 +89,17 @@ export async function getAllTables(env: Env): Promise<string[]> {
 export function generatePostgresInserts(
     tableName: string,
     rows: any[],
-    schema: any[]
+    schema: TableColumn[]
 ): string[] {
     if (rows.length === 0) return [];
 
     const columns = schema.map(col => col.name);
-    const columnList = columns.join(', ');
+    const quotedTableName = quoteIdentifier(tableName);
+    const columnList = columns.map(quoteIdentifier).join(', ');
 
     return rows.map(row => {
-        const values = columns.map(col => {
-            const value = row[col];
-            if (value === null) return 'NULL';
-            if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
-            if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-            return value;
-        }).join(', ');
+        const values = columns.map(col => formatPostgresValue(row[col] ?? null)).join(', ');
 
-        return `INSERT INTO ${tableName} (${columnList}) VALUES (${values}) ON CONFLICT DO NOTHING;`;
+        return `INSERT INTO ${quotedTableName} (${columnList}) VALUES (${values}) ON CONFLICT DO NOTHING;`;
     });
-} 
+}

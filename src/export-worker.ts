@@ -47,7 +47,7 @@ async function streamSqlExport(env: Env, tableName: string, batchSize: number, s
             controller.enqueue(encoder.encode(header));
 
             try {
-                for await (const batch of streamTableData(env, { tableName, batchSize })) {
+                for await (const batch of streamTableData(env, { tableName, batchSize, schema })) {
                     const inserts = generatePostgresInserts(tableName, batch.rows, schema);
                     const sql = inserts.join('\n') + '\n\n';
                     controller.enqueue(encoder.encode(sql));
@@ -87,7 +87,7 @@ async function streamJsonExport(env: Env, tableName: string, batchSize: number, 
             controller.enqueue(encoder.encode(',\n  "data": [\n'));
 
             try {
-                for await (const batch of streamTableData(env, { tableName, batchSize })) {
+                for await (const batch of streamTableData(env, { tableName, batchSize, schema })) {
                     for (const row of batch.rows) {
                         if (!isFirst) {
                             controller.enqueue(encoder.encode(',\n'));

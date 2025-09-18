@@ -1,6 +1,7 @@
 import { executeQuery, getTableInfo, getAllTables } from './db-router';
 import { AutoMirrorDB } from './auto-mirror';
 import { handleExport } from './export-worker';
+import type { TableColumn } from './sql-utils';
 
 export interface Env {
     DB: D1Database;
@@ -53,7 +54,7 @@ export default {
             if (req.method === "GET" && url.pathname === "/schema") {
                 try {
                     const tables = await getAllTables(env);
-                    const schema: Record<string, any[]> = {};
+                    const schema: Record<string, TableColumn[]> = {};
 
                     for (const table of tables) {
                         schema[table] = await getTableInfo(env, table);
@@ -86,7 +87,7 @@ export default {
             if (req.method === "GET" && url.pathname === "/migration-script") {
                 try {
                     const tables = await getAllTables(env);
-                    const schema: Record<string, any[]> = {};
+                    const schema: Record<string, TableColumn[]> = {};
 
                     for (const table of tables) {
                         schema[table] = await getTableInfo(env, table);
@@ -161,7 +162,7 @@ export default {
     }
 };
 
-async function generatePostgresMigrationScript(schema: Record<string, any[]>): Promise<string> {
+async function generatePostgresMigrationScript(schema: Record<string, TableColumn[]>): Promise<string> {
     const { convertD1SchemaToPostgres } = await import('./schema-helper');
     return convertD1SchemaToPostgres(schema);
-} 
+}
