@@ -11,7 +11,8 @@
     "export-data": "echo 'Use the /export endpoint: curl http://localhost:8787/export?table=tablename > export.sql'",
     "validate": "wrangler d1 list && echo 'Validation: Check that your D1 database ID matches wrangler.toml'",
     "get-schema": "echo 'Get database schema: curl http://localhost:8787/schema'",
-    "get-migration": "echo 'Generate migration script: curl http://localhost:8787/migration-script > postgres-migration.sql'"
+    "get-migration": "echo 'Generate migration script: curl http://localhost:8787/migration-script > postgres-migration.sql'",
+    "test": "node --import tsx --test test/**/*.test.ts"
   },
   "keywords": [
     "cloudflare",
