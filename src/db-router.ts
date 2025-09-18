@@ -1,4 +1,5 @@
 import { Env } from './worker';
+import { TableColumn, convertSqlitePlaceholdersToPostgres, quoteIdentifier } from './sql-utils';
 
 export async function executeQuery(env: Env, sql: string, params: unknown[] = []) {
     if (env.PRIMARY_DB === "pg") {
@@ -16,7 +17,7 @@ export async function executeQuery(env: Env, sql: string, params: unknown[] = []
             await client.connect();
 
             // Convert D1 placeholders to Postgres placeholders
-            const pgSql = convertPlaceholders(sql, params.length);
+            const pgSql = convertSqlitePlaceholdersToPostgres(sql);
             const result = await client.query(pgSql, params);
 
             // Return in D1-compatible format
@@ -71,8 +72,8 @@ export async function executeQuery(env: Env, sql: string, params: unknown[] = []
     }
 }
 
-export async function getTableInfo(env: Env, tableName: string) {
-    const sql = `PRAGMA table_info(${tableName})`;
+export async function getTableInfo(env: Env, tableName: string): Promise<TableColumn[]> {
+    const sql = `PRAGMA table_info(${quoteIdentifier(tableName)})`;
 
     if (env.PRIMARY_DB === "pg") {
         // Get table info from Postgres
@@ -107,7 +108,7 @@ export async function getTableInfo(env: Env, tableName: string) {
                 ORDER BY ordinal_position
             `, [tableName]);
 
-            return result.rows;
+            return result.rows as TableColumn[];
         } catch (error) {
             console.error('Failed to get table info from Postgres:', error);
             throw new Error('Failed to get table schema');
@@ -123,7 +124,7 @@ export async function getTableInfo(env: Env, tableName: string) {
         try {
             const stmt = env.DB.prepare(sql);
             const result = await stmt.all();
-            return result.results;
+            return result.results as unknown as TableColumn[];
         } catch (error) {
             console.error('Failed to get table info from D1:', error);
             throw new Error('Failed to get table schema');
@@ -169,7 +170,7 @@ export async function getAllTables(env: Env): Promise<string[]> {
         // Get tables from D1
         try {
             const stmt = env.DB.prepare(`
-                SELECT name FROM sqlite_master 
+                SELECT name FROM sqlite_master
                 WHERE type='table' AND name NOT LIKE 'sqlite_%'
                 ORDER BY name
             `);
@@ -181,8 +182,3 @@ export async function getAllTables(env: Env): Promise<string[]> {
         }
     }
 }
-
-function convertPlaceholders(sql: string, count: number): string {
-    let i = 1;
-    return sql.replace(/\?/g, () => `$${i++}`);
-} 

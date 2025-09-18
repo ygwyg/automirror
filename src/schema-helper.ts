@@ -1,3 +1,5 @@
+import { TableColumn, quoteIdentifier } from './sql-utils';
+
 /**
  * Schema conversion utilities for D1 to Postgres migration
  */
@@ -49,7 +51,7 @@ ${postgresSchema}
     };
 }
 
-export function convertD1SchemaToPostgres(schema: Record<string, any[]>): string {
+export function convertD1SchemaToPostgres(schema: Record<string, TableColumn[]>): string {
     const tables = Object.keys(schema);
     const migrationScript: string[] = [];
 
@@ -69,16 +71,16 @@ export function convertD1SchemaToPostgres(schema: Record<string, any[]>): string
     for (const tableName of tables) {
         const columns = schema[tableName];
         migrationScript.push(`-- Table: ${tableName}`);
-        migrationScript.push(`CREATE TABLE IF NOT EXISTS ${tableName} (`);
+        migrationScript.push(`CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (`);
 
         const columnDefinitions: string[] = [];
-        const primaryKeys: string[] = [];
+        const primaryKeys: { name: string; order: number }[] = [];
 
         for (const column of columns) {
             const { name, type, notnull, dflt_value, pk } = column;
 
-            let pgType = convertSqliteTypeToPostgres(type);
-            let columnDef = `  ${name} ${pgType}`;
+            let pgType = convertSqliteTypeToPostgres(type ?? 'TEXT');
+            let columnDef = `  ${quoteIdentifier(name)} ${pgType}`;
 
             // Handle NOT NULL
             if (notnull) {
@@ -87,15 +89,25 @@ export function convertD1SchemaToPostgres(schema: Record<string, any[]>): string
 
             // Handle default values
             if (dflt_value !== null && dflt_value !== undefined) {
-                let defaultValue = dflt_value;
+                let defaultValue: string;
 
-                // Convert SQLite-specific defaults
-                if (defaultValue === 'CURRENT_TIMESTAMP') {
-                    defaultValue = 'CURRENT_TIMESTAMP';
-                } else if (defaultValue.includes('unixepoch()')) {
-                    defaultValue = 'extract(epoch from now())';
-                } else if (typeof defaultValue === 'string' && !defaultValue.includes('(')) {
-                    defaultValue = `'${defaultValue}'`;
+                if (typeof dflt_value === 'string') {
+                    const trimmed = dflt_value.trim();
+                    if (trimmed.toUpperCase() === 'CURRENT_TIMESTAMP') {
+                        defaultValue = 'CURRENT_TIMESTAMP';
+                    } else if (/unixepoch\(\)/i.test(trimmed)) {
+                        defaultValue = 'extract(epoch from now())';
+                    } else if (!trimmed.includes('(')) {
+                        defaultValue = `'${escapeSingleQuotes(trimmed)}'`;
+                    } else {
+                        defaultValue = trimmed;
+                    }
+                } else if (typeof dflt_value === 'number' || typeof dflt_value === 'bigint') {
+                    defaultValue = dflt_value.toString();
+                } else if (typeof dflt_value === 'boolean') {
+                    defaultValue = dflt_value ? 'TRUE' : 'FALSE';
+                } else {
+                    defaultValue = `'${escapeSingleQuotes(JSON.stringify(dflt_value))}'::jsonb`;
                 }
 
                 columnDef += ` DEFAULT ${defaultValue}`;
@@ -105,13 +117,16 @@ export function convertD1SchemaToPostgres(schema: Record<string, any[]>): string
 
             // Track primary keys
             if (pk) {
-                primaryKeys.push(name);
+                primaryKeys.push({ name, order: pk });
             }
         }
 
         // Add primary key constraint if exists
         if (primaryKeys.length > 0) {
-            columnDefinitions.push(`  PRIMARY KEY (${primaryKeys.join(', ')})`);
+            const sortedKeys = primaryKeys
+                .sort((a, b) => a.order - b.order)
+                .map(key => quoteIdentifier(key.name));
+            columnDefinitions.push(`  PRIMARY KEY (${sortedKeys.join(', ')})`);
         }
 
         migrationScript.push(columnDefinitions.join(',\n'));
@@ -126,7 +141,7 @@ export function convertD1SchemaToPostgres(schema: Record<string, any[]>): string
         // Create index on primary key columns (if not already primary key)
         const nonPkColumns = columns.filter(col => !col.pk && (col.name.includes('id') || col.name.includes('_id')));
         for (const column of nonPkColumns) {
-            migrationScript.push(`CREATE INDEX IF NOT EXISTS idx_${tableName}_${column.name} ON ${tableName}(${column.name});`);
+            migrationScript.push(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`idx_${tableName}_${column.name}`)} ON ${quoteIdentifier(tableName)}(${quoteIdentifier(column.name)});`);
         }
     }
 
@@ -181,4 +196,8 @@ function convertSqliteTypeToPostgres(sqliteType: string): string {
 
     // Default to TEXT for unknown types
     return 'TEXT';
-} 
+}
+
+function escapeSingleQuotes(value: string): string {
+    return value.replace(/'/g, "''");
+}
