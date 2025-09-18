@@ -1,4 +1,5 @@
 import { Env } from './worker';
+import { buildPostgresParameterArray, convertSqlitePlaceholdersToPostgres } from './sql-utils';
 
 export async function executeQuery(env: Env, sql: string, params: unknown[] = []) {
     if (env.PRIMARY_DB === "pg") {
@@ -16,8 +17,11 @@ export async function executeQuery(env: Env, sql: string, params: unknown[] = []
             await client.connect();
 
             // Convert D1 placeholders to Postgres placeholders
-            const pgSql = convertPlaceholders(sql, params.length);
-            const result = await client.query(pgSql, params);
+            const { sql: pgSql, mapping } = convertSqlitePlaceholdersToPostgres(sql);
+            const normalizedParams = mapping.length > 0
+                ? buildPostgresParameterArray(mapping, params)
+                : params;
+            const result = await client.query(pgSql, normalizedParams);
 
             // Return in D1-compatible format
             return {
@@ -181,8 +185,3 @@ export async function getAllTables(env: Env): Promise<string[]> {
         }
     }
 }
-
-function convertPlaceholders(sql: string, count: number): string {
-    let i = 1;
-    return sql.replace(/\?/g, () => `$${i++}`);
-} 
