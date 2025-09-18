@@ -1,4 +1,5 @@
 import { Env } from './worker';
+import { convertSqlitePlaceholdersToPostgres, PlaceholderMappingEntry, normalizeNamedBindings, buildPostgresParameterArray } from './sql-utils';
 
 export class AutoMirrorDB {
     constructor(private env: Env) { }
@@ -8,48 +9,69 @@ export class AutoMirrorDB {
 
         this.env.DB.prepare = (sql: string) => {
             const stmt = originalPrepare(sql);
+            return this.patchStatement(stmt, sql);
+        };
+    }
+
+    private patchStatement<T extends D1PreparedStatement>(stmt: T, sql: string): T {
+        const { sql: pgSql, mapping } = convertSqlitePlaceholdersToPostgres(sql);
+        const isWriteOperation = this.isWriteSQL(sql);
+
+        const applyExecutionPatches = (statement: any, boundParamsProvider: () => unknown[]) => {
+            const baseRun = captureOriginalMethod(statement, 'run');
+            if (baseRun) {
+                statement.run = async <T = Record<string, unknown>>(...args: unknown[]): Promise<D1Result<T>> => {
+                    const result = await baseRun.apply(statement, args) as D1Result<T>;
+                    if (isWriteOperation) {
+                        const params = args.length > 0
+                            ? this.normalizeParams(args, mapping)
+                            : boundParamsProvider();
+                        await this.mirrorToPostgres(pgSql, [...params]);
+                    }
+                    return result;
+                };
+            }
+
+            const baseAll = captureOriginalMethod(statement, 'all');
+            if (baseAll) {
+                statement.all = async <T = Record<string, unknown>>(...args: unknown[]): Promise<D1Result<T>> => {
+                    const result = await baseAll.apply(statement, args) as D1Result<T>;
+                    if (isWriteOperation) {
+                        const params = boundParamsProvider();
+                        await this.mirrorToPostgres(pgSql, [...params]);
+                    }
+                    return result;
+                };
+            }
+
+            const baseFirst = captureOriginalMethod(statement, 'first');
+            if (baseFirst) {
+                statement.first = async <T = Record<string, unknown>>(...args: unknown[]): Promise<T | null> => {
+                    const result = await baseFirst.apply(statement, args) as T | null;
+                    if (isWriteOperation) {
+                        const params = boundParamsProvider();
+                        await this.mirrorToPostgres(pgSql, [...params]);
+                    }
+                    return result;
+                };
+            }
+
+            return statement;
+        };
+
+        applyExecutionPatches(stmt, () => []);
+
+        if (typeof stmt.bind === 'function') {
             const originalBind = stmt.bind.bind(stmt);
-
-            stmt.bind = (...params: unknown[]) => {
-                const bound = originalBind(...params);
-
-                // Patch all methods that can execute write operations
-                const originalRun = bound.run.bind(bound);
-                const originalAll = bound.all.bind(bound);
-                const originalFirst = bound.first.bind(bound);
-
-                // Only mirror if this is a write operation (INSERT, UPDATE, DELETE)
-                const isWriteOperation = this.isWriteSQL(sql);
-
-                bound.run = async <T = Record<string, unknown>>(): Promise<D1Result<T>> => {
-                    const result = await originalRun<T>();
-                    if (isWriteOperation) {
-                        await this.mirrorToPostgres(sql, params);
-                    }
-                    return result;
-                };
-
-                bound.all = async <T = Record<string, unknown>>(): Promise<D1Result<T>> => {
-                    const result = await originalAll<T>();
-                    if (isWriteOperation) {
-                        await this.mirrorToPostgres(sql, params);
-                    }
-                    return result;
-                };
-
-                bound.first = async <T = Record<string, unknown>>(colName?: string): Promise<T | null> => {
-                    const result = await (colName ? originalFirst<T>(colName) : originalFirst<T>());
-                    if (isWriteOperation) {
-                        await this.mirrorToPostgres(sql, params);
-                    }
-                    return result;
-                };
-
+            stmt.bind = (...bindArgs: unknown[]) => {
+                const normalized = this.normalizeParams(bindArgs, mapping);
+                const bound = originalBind(...bindArgs);
+                applyExecutionPatches(bound, () => normalized);
                 return bound;
             };
+        }
 
-            return stmt;
-        };
+        return stmt;
     }
 
     private isWriteSQL(sql: string): boolean {
@@ -75,11 +97,10 @@ export class AutoMirrorDB {
 
     private async mirrorToPostgres(sql: string, params: unknown[]) {
         try {
-            const pgSql = this.convertPlaceholders(sql, params.length);
             const opId = crypto.randomUUID();
 
             await this.env.MIRROR_QUEUE.send({
-                sql: pgSql,
+                sql,
                 params,
                 opId
             });
@@ -89,8 +110,82 @@ export class AutoMirrorDB {
         }
     }
 
-    private convertPlaceholders(sql: string, count: number): string {
-        let i = 1;
-        return sql.replace(/\?/g, () => `$${i++}`);
+    private normalizeParams(rawParams: unknown[], mapping: PlaceholderMappingEntry[]): unknown[] {
+        if (mapping.length === 0) {
+            return [];
+        }
+
+        const positional: unknown[] = [];
+        const named = new Map<string, unknown>();
+
+        const addNamed = (key: string, value: unknown) => {
+            normalizeNamedBindings(named, key, value);
+        };
+
+        for (const param of rawParams) {
+            if (Array.isArray(param)) {
+                positional.push(...param);
+                continue;
+            }
+
+            if (param instanceof Map) {
+                for (const [key, value] of param.entries()) {
+                    if (typeof key === 'string') {
+                        addNamed(key, value);
+                    }
+                }
+                continue;
+            }
+
+            if (isPlainObject(param)) {
+                for (const [key, value] of Object.entries(param)) {
+                    addNamed(key, value);
+                }
+                continue;
+            }
+
+            positional.push(param);
+        }
+
+        return buildPostgresParameterArray(mapping, positional, named);
     }
-} 
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    if (value === null || typeof value !== 'object') {
+        return false;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+
+type StatementMethod = (...args: unknown[]) => Promise<unknown>;
+
+type OriginalMethodRegistry = {
+    run?: StatementMethod;
+    all?: StatementMethod;
+    first?: StatementMethod;
+};
+
+const originalMethodRegistry = new WeakMap<object, OriginalMethodRegistry>();
+
+function captureOriginalMethod(statement: any, method: 'run' | 'all' | 'first'): StatementMethod | undefined {
+    let registry = originalMethodRegistry.get(statement);
+    if (!registry) {
+        registry = {};
+        originalMethodRegistry.set(statement, registry);
+    }
+
+    if (registry[method]) {
+        return registry[method];
+    }
+
+    const current = statement[method];
+    if (typeof current === 'function') {
+        registry[method] = current as StatementMethod;
+        return registry[method];
+    }
+
+    return undefined;
+}
