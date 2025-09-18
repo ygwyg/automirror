@@ -1,4 +1,5 @@
 import { Env } from './worker';
+import { translateSqliteWriteToPostgres } from './sql-utils';
 
 export class AutoMirrorDB {
     constructor(private env: Env) { }
@@ -76,11 +77,20 @@ export class AutoMirrorDB {
     private async mirrorToPostgres(sql: string, params: unknown[]) {
         try {
             const pgSql = this.convertPlaceholders(sql, params.length);
+            const translation = await translateSqliteWriteToPostgres(this.env, pgSql, params);
+
+            if (translation.type === 'skip') {
+                console.log(
+                    `Skipping Postgres mirror for statement "${truncateSql(sql)}": ${translation.reason}`
+                );
+                return;
+            }
+
             const opId = crypto.randomUUID();
 
             await this.env.MIRROR_QUEUE.send({
-                sql: pgSql,
-                params,
+                sql: translation.sql,
+                params: translation.params,
                 opId
             });
         } catch (error) {
@@ -93,4 +103,12 @@ export class AutoMirrorDB {
         let i = 1;
         return sql.replace(/\?/g, () => `$${i++}`);
     }
-} 
+}
+
+function truncateSql(sql: string, max = 80): string {
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= max) {
+        return normalized;
+    }
+    return `${normalized.slice(0, max - 1)}…`;
+}
